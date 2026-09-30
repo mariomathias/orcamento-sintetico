@@ -2091,7 +2091,7 @@ def atualizar_combobox_subcategorias(evento=None):
 def criar_categoria():
     nome = simpledialog.askstring(
         "Nova categoria",
-        "Nome da categoria:\n\nExemplo: SUPRAESTRUTURA",
+        "Nome da categoria:\n",
         parent=janela
     )
 
@@ -2141,7 +2141,7 @@ def criar_subcategoria():
 
     nome = simpledialog.askstring(
         "Nova subcategoria",
-        f"Categoria: {categoria}\n\nNome da subcategoria:\nExemplo: PILARES",
+        f"Categoria: {categoria}\n\nNome da subcategoria:\n",
         parent=janela
     )
 
@@ -3450,6 +3450,225 @@ def exportar_orcamento_excel():
     )
 
 
+
+# ============================================================
+# BUSCA POR DESCRIÇÃO
+# ============================================================
+
+def _consultar_registros_por_descricao(banco, tipo, termo, limite=300):
+    banco = (banco or "").strip().upper()
+    tipo = (tipo or "").strip().upper()
+    termo = (termo or "").strip()
+
+    if not termo:
+        return []
+
+    palavras = [p for p in termo.split() if p]
+    if not palavras:
+        return []
+
+    if banco == "SEINFRA":
+        con = conectar()
+        tabela = "composicoes" if tipo == "COMPOSICAO" else "insumos"
+    elif banco == "SINAPI":
+        con = conectar_sinapi()
+        tabela = "composicoes" if tipo == "COMPOSICAO" else "insumos"
+    elif banco in ("PRÓPRIO", "PROPRIO"):
+        con = conectar_usuario()
+        tabela = "composicoes_proprias" if tipo == "COMPOSICAO" else "insumos_proprios"
+    else:
+        return []
+
+    try:
+        condicoes = []
+        params = []
+        for palavra in palavras:
+            condicoes.append("UPPER(descricao) LIKE ?")
+            params.append(f"%{palavra.upper()}%")
+
+        sql = f"""
+            SELECT codigo, descricao, unidade
+            FROM {tabela}
+            WHERE {' AND '.join(condicoes)}
+            ORDER BY descricao, codigo
+            LIMIT ?
+        """
+        params.append(limite)
+        return con.execute(sql, params).fetchall()
+    finally:
+        con.close()
+
+
+def abrir_busca_descricao(tipo, destino):
+    tipo = (tipo or "").strip().upper()
+    destino = (destino or "").strip().upper()
+
+    if destino in ("CONSULTA_COMPOSICAO", "CONSULTA_INSUMO"):
+        banco_inicial = banco_selecionado("combo_banco_consulta")
+    elif destino == "ORCAMENTO":
+        banco_inicial = banco_selecionado("combo_banco_orcamento")
+    else:
+        banco_inicial = "SEINFRA"
+
+    janela_busca = tk.Toplevel(janela)
+    janela_busca.title(
+        "Buscar composição por descrição"
+        if tipo == "COMPOSICAO"
+        else "Buscar insumo por descrição"
+    )
+    janela_busca.geometry("980x560")
+    janela_busca.minsize(780, 420)
+    janela_busca.transient(janela)
+
+    frame_filtros = ttk.LabelFrame(janela_busca, text="Busca")
+    frame_filtros.pack(fill="x", padx=10, pady=10)
+
+    ttk.Label(frame_filtros, text="Banco:").grid(
+        row=0, column=0, padx=(10, 5), pady=8, sticky="e"
+    )
+
+    combo_banco_busca = ttk.Combobox(
+        frame_filtros,
+        state="readonly",
+        width=12,
+        values=("SEINFRA", "SINAPI", "PRÓPRIO"),
+    )
+    combo_banco_busca.grid(row=0, column=1, padx=5, pady=8)
+    combo_banco_busca.set(banco_inicial if banco_inicial else "SEINFRA")
+
+    ttk.Label(frame_filtros, text="Descrição:").grid(
+        row=0, column=2, padx=(15, 5), pady=8, sticky="e"
+    )
+
+    entrada_descricao_busca = ttk.Entry(frame_filtros, width=55)
+    entrada_descricao_busca.grid(row=0, column=3, padx=5, pady=8, sticky="ew")
+    frame_filtros.columnconfigure(3, weight=1)
+
+    frame_resultados = ttk.Frame(janela_busca)
+    frame_resultados.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    tabela_busca = ttk.Treeview(
+        frame_resultados,
+        columns=("codigo", "descricao", "unidade"),
+        show="headings",
+        selectmode="browse",
+    )
+    tabela_busca.heading("codigo", text="Código")
+    tabela_busca.heading("descricao", text="Descrição")
+    tabela_busca.heading("unidade", text="Und")
+    tabela_busca.column("codigo", width=130, anchor="center")
+    tabela_busca.column("descricao", width=680, anchor="w")
+    tabela_busca.column("unidade", width=90, anchor="center")
+
+    scroll_y_busca = ttk.Scrollbar(
+        frame_resultados,
+        orient="vertical",
+        command=tabela_busca.yview,
+    )
+    tabela_busca.configure(yscrollcommand=scroll_y_busca.set)
+    tabela_busca.pack(side="left", fill="both", expand=True)
+    scroll_y_busca.pack(side="right", fill="y")
+
+    label_status_busca = ttk.Label(
+        janela_busca,
+        text="Digite uma descrição e clique em Buscar.",
+        foreground="#555555",
+    )
+    label_status_busca.pack(anchor="w", padx=15, pady=(0, 5))
+
+    def executar_busca(evento=None):
+        termo = entrada_descricao_busca.get().strip()
+        banco = combo_banco_busca.get().strip().upper()
+
+        for iid in tabela_busca.get_children():
+            tabela_busca.delete(iid)
+
+        if not termo:
+            label_status_busca.config(
+                text="Informe uma palavra ou parte da descrição."
+            )
+            return
+
+        try:
+            resultados = _consultar_registros_por_descricao(
+                banco, tipo, termo, limite=300
+            )
+        except Exception as erro:
+            messagebox.showerror(
+                "Erro",
+                f"Não foi possível realizar a busca:\n\n{erro}",
+                parent=janela_busca,
+            )
+            return
+
+        for codigo, descricao, unidade in resultados:
+            tabela_busca.insert(
+                "", tk.END,
+                values=(codigo, descricao or "", unidade or "")
+            )
+
+        if resultados:
+            label_status_busca.config(
+                text=(
+                    f"{len(resultados)} resultado(s) encontrado(s). "
+                    "Dê duplo clique no item desejado."
+                )
+            )
+        else:
+            label_status_busca.config(
+                text="Nenhum resultado encontrado para essa descrição."
+            )
+
+    def selecionar_resultado(evento=None):
+        selecao = tabela_busca.selection()
+        if not selecao:
+            return
+
+        valores = tabela_busca.item(selecao[0], "values")
+        if not valores:
+            return
+
+        codigo = str(valores[0]).strip()
+        banco = combo_banco_busca.get().strip().upper()
+
+        if destino == "CONSULTA_COMPOSICAO":
+            combo_banco_consulta.set(banco)
+            entrada_codigo_composicao.delete(0, tk.END)
+            entrada_codigo_composicao.insert(0, codigo)
+            janela_busca.destroy()
+            consultar_composicao(codigo)
+
+        elif destino == "CONSULTA_INSUMO":
+            combo_banco_consulta.set(banco)
+            entrada_codigo_consulta.delete(0, tk.END)
+            entrada_codigo_consulta.insert(0, codigo)
+            janela_busca.destroy()
+            consultar_insumo()
+
+        elif destino == "ORCAMENTO":
+            combo_banco_orcamento.set(banco)
+            entrada_codigo_orcamento.delete(0, tk.END)
+            entrada_codigo_orcamento.insert(0, codigo)
+            janela_busca.destroy()
+            entrada_quantidade_orcamento.focus_set()
+
+    ttk.Button(
+        frame_filtros,
+        text="Buscar",
+        command=executar_busca,
+    ).grid(row=0, column=4, padx=8, pady=8)
+
+    ttk.Button(
+        frame_filtros,
+        text="Usar selecionado",
+        command=selecionar_resultado,
+    ).grid(row=0, column=5, padx=(0, 10), pady=8)
+
+    entrada_descricao_busca.bind("<Return>", executar_busca)
+    tabela_busca.bind("<Double-1>", selecionar_resultado)
+    entrada_descricao_busca.focus_set()
+
+
 # ============================================================
 # INTERFACE
 # ============================================================
@@ -3506,6 +3725,14 @@ ttk.Button(
     text="Consultar",
     command=consultar_composicao
 ).pack(side="left")
+
+ttk.Button(
+    frame_busca,
+    text="Buscar por descrição",
+    command=lambda: abrir_busca_descricao(
+        "COMPOSICAO", "CONSULTA_COMPOSICAO"
+    )
+).pack(side="left", padx=(8, 0))
 
 ttk.Label(
     frame_busca,
@@ -3588,6 +3815,14 @@ ttk.Button(
     text="Consultar",
     command=consultar_insumo
 ).grid(row=0, column=2, padx=10, pady=8)
+
+ttk.Button(
+    frame_insumo,
+    text="Buscar por descrição",
+    command=lambda: abrir_busca_descricao(
+        "INSUMO", "CONSULTA_INSUMO"
+    )
+).grid(row=0, column=3, padx=10, pady=8)
 
 label_resultado_insumo = ttk.Label(
     aba_consulta_insumos,
@@ -3923,24 +4158,32 @@ ttk.Label(frame_adicionar, text="Código:").grid(row=0, column=2, padx=(15,5), p
 entrada_codigo_orcamento = ttk.Entry(frame_adicionar, width=18)
 entrada_codigo_orcamento.grid(row=0, column=3, padx=5, pady=8)
 
+ttk.Button(
+    frame_adicionar,
+    text="Buscar por descrição",
+    command=lambda: abrir_busca_descricao(
+        "COMPOSICAO", "ORCAMENTO"
+    )
+).grid(row=0, column=4, padx=(5, 10), pady=8)
+
 ttk.Label(frame_adicionar, text="Quantidade:").grid(
-    row=0, column=4, padx=(20, 5), pady=8
+    row=0, column=5, padx=(10, 5), pady=8
 )
 
 entrada_quantidade_orcamento = ttk.Entry(frame_adicionar, width=15)
-entrada_quantidade_orcamento.grid(row=0, column=5, padx=5, pady=8)
+entrada_quantidade_orcamento.grid(row=0, column=6, padx=5, pady=8)
 
 ttk.Button(
     frame_adicionar,
     text="Adicionar ao orçamento",
     command=adicionar_composicao_orcamento
-).grid(row=0, column=6, padx=10, pady=8)
+).grid(row=0, column=7, padx=10, pady=8)
 
 ttk.Button(
     frame_adicionar,
     text="Recalcular preços / BDI",
     command=recalcular_orcamento
-).grid(row=0, column=7, padx=5, pady=8)
+).grid(row=0, column=8, padx=5, pady=8)
 
 # Árvore
 frame_arvore = ttk.Frame(aba_orcamento)
